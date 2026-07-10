@@ -16,11 +16,11 @@ export default function App() {
   // Config States (Local Storage)
   const [exchangeRate, setExchangeRate] = useState<number>(() => Number(localStorage.getItem('ex_rate')) || 5.8);
   
-  // 💡 အဆင့်မြှင့်တင်မှု - 1KG နှုန်း မဟုတ်တော့ဘဲ စုစုပေါင်း ကာဂိုခအိတ်ကြီးတစ်ခုလုံးစာ ကျသင့်ငွေ (MMK) ကို တိုက်ရိုက်ထည့်ရန် ပြောင်းလဲခြင်း
+  // စုစုပေါင်း ကာဂိုခအိတ်ကြီးတစ်ခုလုံးစာ ကျသင့်ငွေ (MMK) ကို တိုက်ရိုက်ရိုက်ထည့်ရန်
   const [totalCargoInput, setTotalCargoInput] = useState<number>(() => Number(localStorage.getItem('total_cargo_input')) || 450000);
   const [profitMargin, setProfitMargin] = useState<number>(() => Number(localStorage.getItem('profit_margin')) || 30);
 
-  // Items State (Value-based မို့ weightGrams မလိုတော့ပါ)
+  // Items State (Value-based စနစ်ဖြစ်၍ weightGrams မလိုတော့ပါ)
   const [items, setItems] = useState<Item[]>(() => {
     const saved = localStorage.getItem('cargo_items');
     return saved ? JSON.parse(saved) : [];
@@ -76,7 +76,7 @@ export default function App() {
     return Math.ceil(amount / 5000) * 5000;
   };
 
-  // ⚡ Upgraded Gemini 2.5 Flash Voucher Parser
+  // ⚡ Tax ရာခိုင်နှုန်းနှင့် အမှန်ကန်ဆုံး နောက်ဆုံးကော်လံ (Total Net Amount) ကို အခြေခံ၍ တွက်ချက်မည့် စနစ်သစ်
   const handleVoucherUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -87,7 +87,7 @@ export default function App() {
     }
 
     setLoadingAI(true);
-    setAiStatus("Gemini 2.5 က ပုံရိပ်ကို အသေးစိတ် ခွဲခြမ်းစိတ်ဖြာနေပါသည်... ⚡");
+    setAiStatus("Gemini 2.5 က Tax အပါအဝင် ကိန်းဂဏန်းများကို အတိအကျ တွက်ချက်နေပါသည်... ⚡");
 
     try {
       const base64Data = await new Promise<string>((resolve, reject) => {
@@ -106,30 +106,26 @@ export default function App() {
         generationConfig: { responseMimeType: "application/json" }
       });
 
-      // ၃။ Vietnamese Currency Format အား တိတိကျကျ ဖတ်ခိုင်းသည့် Prompt အသစ်
+      // 🚀 Gemini Prompt ကို နောက်ဆုံးကော်လံ (Thanh tiền) အား အခြေခံရန် တင်းကျပ်စွာ ညွှန်ကြားခြင်း
       const prompt = `
-        You are an expert OCR and retail receipt parser. 
-        Analyze the provided image (it could be a retail receipt like MM Mega Market or an e-commerce screenshot like Shopee).
-        
-        Extract all individual items purchased or selected.
-        
-        CRITICAL INSTRUCTION FOR VIETNAMESE CURRENCY (VND):
-        - Vietnamese receipts use periods/dots (.) as thousands separators. (e.g., "536.998" means 536998 VND, NOT 536.998).
-        - You MUST remove all dots (.) or commas (,) from the price before putting it into 'vndPrice'. 
-        - For example: "536.998" -> 536998, "26.500" -> 26500, "1.250.000" -> 1250000.
-        - Ensure 'vndPrice' is a whole integer number (e.g., 536998).
+        You are an expert OCR and retail receipt parser specializing in Vietnamese receipts (like MM Mega Market).
+        Analyze the image and extract all purchased products accurately.
 
-        CRITICAL INSTRUCTION FOR RETAIL RECEIPTS:
-        - Look closely at the numbers under the product name.
-        - DO NOT confuse 'Thanh tien' (Total Line Amount) with 'Don gia' / 'Gia' (Unit Price).
-        - You MUST extract the INDIVIDUAL UNIT PRICE (the base cost for 1 item) as 'vndPrice'.
+        CRITICAL INSTRUCTION FOR PRICE AND TAX EXTRACTION:
+        1. Identify the quantity from 'So luong' column.
+        2. DO NOT USE the 'Don gia' column because it excludes tax and contains confusing decimals.
+        3. Go directly to the LAST COLUMN 'Thanh tien da co thue GTGT' (Total Amount with Tax included). For example, for WAKEUP coffee, this value is "536.998".
+        4. Interpret the dots/periods (.) as thousands separators: "536.998" means 536998 VND integer.
+        5. CALCULATE THE TRUE UNIT PRICE WITH TAX: Divide this total 'Thanh tien' integer by the 'So luong' (Quantity).
+           - Example: 536998 (Total with tax) / 10 (Qty) = 53699.8 VND.
+        6. Round it to the nearest clean integer and put this calculated tax-included price for ONE item into 'vndPrice' (e.g., 53700).
 
-        Return a strictly valid JSON array matching this structure:
+        Return a strictly valid JSON array structure:
         [
           {
-            "name": "PRODUCT NAME AND VARIATION (Keep it clean, uppercase, readable)",
+            "name": "PRODUCT NAME AND VARIATION (Keep it clean, uppercase)",
             "qty": number (The quantity of this item),
-            "vndPrice": number (The actual unit cost/price for ONE single item in VND as an integer)
+            "vndPrice": number (The CALCULATED tax-inclusive unit cost for ONE single item in VND as a clean whole integer. e.g., 53700)
           }
         ]
         Do not include markdown blocks, text wrappers, or metadata. Return raw JSON array only.
@@ -140,17 +136,25 @@ export default function App() {
       const parsedItems = JSON.parse(responseText);
 
       if (Array.isArray(parsedItems)) {
+        // Frontend Double-Check: အကယ်၍ Gemini မှ အစက်အပြောက်ကြောင့် မှားယွင်းပြီး ၁၀၀၀ အောက် တန်ဖိုးများ ပေးလာခဲ့ပါက Auto-Fix လုပ်ခြင်း
         const finalScannedItems: Item[] = parsedItems.map((item: any, idx: number) => {
+          let checkedVndPrice = Number(item.vndPrice) || 0;
+
+          // Gemini က ၅၃,၇၀၀ ပြောင်းရမည့်အစား ၅၃.၇ ဟု ဒသမကိန်းအမှား ပေးလာခဲ့ပါက ၁၀၀၀ ဖြင့် မြှောက်၍ အမှန်ပြင်ဆင်ခြင်း
+          if (checkedVndPrice > 0 && checkedVndPrice < 1000) {
+            checkedVndPrice = checkedVndPrice * 1000;
+          }
+
           return {
             id: `gemini-${idx}-${Date.now()}`,
             name: (item.name || "UNKNOWN ITEM").toUpperCase(),
             qty: Number(item.qty) || 1,
-            vndPrice: Math.round(Number(item.vndPrice)) || 0
+            vndPrice: Math.round(checkedVndPrice)
           };
         });
 
         setItems(finalScannedItems);
-        setAiStatus(`🎉 အောင်မြင်ပါသည်! Gemini မှ ပစ္စည်း ${finalScannedItems.length} ခု၏ မူရင်း 'တစ်ယူနစ်ဈေး' ကို အတိအကျ ခွဲထုတ်ပေးပြီးပါပြီ။`);
+        setAiStatus(`🎉 အောင်မြင်ပါသည်! Gemini မှ Tax အပြီးအစီး ပါဝင်ပြီးသား တစ်ယူနစ်ဈေး (ဥပမာ- 53,700 VND) ဖြင့် တိကျစွာ ခွဲထုတ်ပေးပြီးပါပြီ။`);
       } else {
         setAiStatus("⚠️ Data Format အဆင်မပြေဖြစ်သွားသည်။ ထပ်မံကြိုးစားကြည့်ပါ။");
       }
@@ -159,7 +163,7 @@ export default function App() {
       console.error("Gemini Scan Error:", error);
       setAiStatus("❌ ပုံရိပ်ကို ဖတ်၍မရနိုင်ပါ။ Prompt သို့မဟုတ် API သတ်မှတ်ချက်ကို ပြန်စစ်ပါ။");
     } finally {
-      loadingAI && setLoadingAI(false);
+      setLoadingAI(false);
     }
   };
 
@@ -248,7 +252,7 @@ export default function App() {
               {items.map((item, index) => {
                 const itemTotalVND = item.vndPrice * item.qty;
                 
-                // 🚀 အဓိကပြင်ဆင်ချက်- မူရင်းဈေးအချိုးအစားအလိုက် ကာဂိုခကို ခွဲဝေတွက်ချက်ခြင်း (Value-based Cargo Distribution)
+                // မူရင်းဈေးအချိုးအစားအလိုက် ကာဂိုခကို ခွဲဝေတွက်ချက်ခြင်း (Value-based Cargo Distribution)
                 const itemCargoShareMMK = totalVND > 0 
                   ? (itemTotalVND / totalVND) * currentCargoMMK 
                   : 0;
