@@ -6,7 +6,6 @@ interface Item {
   name: string;
   qty: number;
   vndPrice: number;
-  weightGrams: number;
 }
 
 // Vite Environment Variable မှတစ်ဆင့် API Key ကို ချိတ်ဆက်ခြင်း
@@ -16,17 +15,19 @@ const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 export default function App() {
   // Config States (Local Storage)
   const [exchangeRate, setExchangeRate] = useState<number>(() => Number(localStorage.getItem('ex_rate')) || 5.8);
-  const [cargoRate, setCargoRate] = useState<number>(() => Number(localStorage.getItem('cargo_rate')) || 45000);
+  
+  // 💡 အဆင့်မြှင့်တင်မှု - 1KG နှုန်း မဟုတ်တော့ဘဲ စုစုပေါင်း ကာဂိုခအိတ်ကြီးတစ်ခုလုံးစာ ကျသင့်ငွေ (MMK) ကို တိုက်ရိုက်ထည့်ရန် ပြောင်းလဲခြင်း
+  const [totalCargoInput, setTotalCargoInput] = useState<number>(() => Number(localStorage.getItem('total_cargo_input')) || 450000);
   const [profitMargin, setProfitMargin] = useState<number>(() => Number(localStorage.getItem('profit_margin')) || 30);
 
-  // Items State
+  // Items State (Value-based မို့ weightGrams မလိုတော့ပါ)
   const [items, setItems] = useState<Item[]>(() => {
     const saved = localStorage.getItem('cargo_items');
     return saved ? JSON.parse(saved) : [];
   });
 
   // Manual Form State
-  const [newItem, setNewItem] = useState({ name: '', qty: 1, vndPrice: 0, weightGrams: 0 });
+  const [newItem, setNewItem] = useState({ name: '', qty: 1, vndPrice: 0 });
   
   // Gemini Loading States
   const [loadingAI, setLoadingAI] = useState(false);
@@ -35,24 +36,25 @@ export default function App() {
   // Sync to LocalStorage
   useEffect(() => {
     localStorage.setItem('ex_rate', exchangeRate.toString());
-    localStorage.setItem('cargo_rate', cargoRate.toString());
+    localStorage.setItem('total_cargo_input', totalCargoInput.toString());
     localStorage.setItem('profit_margin', profitMargin.toString());
     localStorage.setItem('cargo_items', JSON.stringify(items));
-  }, [exchangeRate, cargoRate, profitMargin, items]);
+  }, [exchangeRate, totalCargoInput, profitMargin, items]);
 
-  // Global Calculations
+  // Global Calculations (Value-based Logic)
   const totalVND = items.reduce((sum, item) => sum + (item.vndPrice * item.qty), 0);
-  const totalWeightKG = items.reduce((sum, item) => sum + ((item.weightGrams * item.qty) / 1000), 0);
-  const totalCargoMMK = totalWeightKG * cargoRate;
   const totalBaseMMK = totalVND / exchangeRate;
-  const totalCostMMK = totalBaseMMK + totalCargoMMK;
+  
+  // စာရင်းထဲတွင် ပစ္စည်းရှိနေမှသာ ရိုက်ထည့်ထားသော ကာဂိုခကို ပေါင်းတွက်မည်
+  const currentCargoMMK = items.length > 0 ? totalCargoInput : 0;
+  const totalCostMMK = totalBaseMMK + currentCargoMMK;
 
   // Manual Add Item
   const handleAddItem = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newItem.name) return;
     setItems([...items, { ...newItem, id: `manual-${Date.now()}` }]);
-    setNewItem({ name: '', qty: 1, vndPrice: 0, weightGrams: 0 });
+    setNewItem({ name: '', qty: 1, vndPrice: 0 });
   };
 
   // Delete Item
@@ -74,7 +76,7 @@ export default function App() {
     return Math.ceil(amount / 5000) * 5000;
   };
 
-  // ⚡ Upgraded Gemini 2.5 Flash Voucher & Screenshot Parser Logic
+  // ⚡ Upgraded Gemini 2.5 Flash Voucher Parser
   const handleVoucherUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -85,10 +87,9 @@ export default function App() {
     }
 
     setLoadingAI(true);
-    setAiStatus("Gemini 2.5 က ပုံရိပ်ကို အသေးစိတ် ขွဲခြမ်းစိတ်ဖြာနေပါသည်... ⚡");
+    setAiStatus("Gemini 2.5 က ပုံရိပ်ကို အသေးစိတ် ခွဲခြမ်းစိတ်ဖြာနေပါသည်... ⚡");
 
     try {
-      // ၁။ ပုံကို Base64 သို့ ပြောင်းလဲခြင်း
       const base64Data = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => resolve((reader.result as string).split(",")[1]);
@@ -100,13 +101,11 @@ export default function App() {
         inlineData: { data: base64Data, mimeType: file.type }
       };
 
-      // ၂။ Model အား လက်ရှိဗားရှင်း ဖြစ်သော gemini-2.5-flash သို့ ပြောင်းလဲခြင်း
       const model = genAI.getGenerativeModel({ 
         model: "gemini-2.5-flash",
         generationConfig: { responseMimeType: "application/json" }
       });
 
-      // ၃။ ပိုမိုတိကျပြတ်သားပြီး ခိုင်မာသော Prompt ကို ပြောင်းလဲအသုံးပြုခြင်း
       const prompt = `
         You are an expert OCR and retail receipt parser. 
         Analyze the provided image (it could be a retail receipt like MM Mega Market or an e-commerce screenshot like Shopee).
@@ -116,10 +115,6 @@ export default function App() {
         - Look closely at the numbers under the product name.
         - DO NOT confuse 'Thanh tien' (Total Line Amount) with 'Don gia' / 'Gia' (Unit Price).
         - You MUST extract the INDIVIDUAL UNIT PRICE (the base cost for 1 item) as 'vndPrice'.
-        - For example, if 5 items cost 268,499 total, the unit price is 53,700. Put 53700 in 'vndPrice' and 5 in 'qty'.
-
-        CRITICAL INSTRUCTION FOR E-COMMERCE SCREENSHOTS (e.g., Shopee):
-        - Extract the product title, selected variation name, selected quantity, and the current active price.
 
         Return a strictly valid JSON array matching this structure:
         [
@@ -132,35 +127,20 @@ export default function App() {
         Do not include markdown blocks, text wrappers, or metadata. Return raw JSON array only.
       `;
 
-      // ၄။ Gemini API သို့ တောင်းဆိုခြင်း
       const result = await model.generateContent([prompt, imagePart]);
       const responseText = result.response.text();
       const parsedItems = JSON.parse(responseText);
 
       if (Array.isArray(parsedItems)) {
-        // ၅။ ရရှိလာသော ပစ္စည်းများအလိုက် သင့်တော်မည့် အလေးချိန် (Grams) များကို တွက်ချက်ခြင်း
         const finalScannedItems: Item[] = parsedItems.map((item: any, idx: number) => {
-          const nameUpper = (item.name || "UNKNOWN ITEM").toUpperCase();
-          
-          // အစ်ကို့ ကာဂိုပစ္စည်းများအတွက် Grams ခန့်မှန်းချက် ပတ်တန်များ
-          let detectedWeight = 100; // Default weight
-          if (nameUpper.includes("WAKEUP")) detectedWeight = 456; // 19g * 24 packets
-          if (nameUpper.includes("G7") && nameUpper.includes("SUA")) detectedWeight = 336; // 16g * 21 packets
-          if (nameUpper.includes("2IN1") || nameUpper.includes("HOA TAN")) detectedWeight = 240;
-          if (nameUpper.includes("DE NHAT")) detectedWeight = 84; //
-          if (nameUpper.includes("CUNGDINH") || nameUpper.includes("HANOI")) detectedWeight = 76; //
-          if (nameUpper.includes("MÁY IN") || nameUpper.includes("PRINTER")) detectedWeight = 500;
-
           return {
             id: `gemini-${idx}-${Date.now()}`,
-            name: nameUpper,
+            name: (item.name || "UNKNOWN ITEM").toUpperCase(),
             qty: Number(item.qty) || 1,
-            vndPrice: Math.round(Number(item.vndPrice)) || 0,
-            weightGrams: detectedWeight
+            vndPrice: Math.round(Number(item.vndPrice)) || 0
           };
         });
 
-        // စာရင်းအသစ်ကို အစားထိုးခြင်း
         setItems(finalScannedItems);
         setAiStatus(`🎉 အောင်မြင်ပါသည်! Gemini မှ ပစ္စည်း ${finalScannedItems.length} ခု၏ မူရင်း 'တစ်ယူနစ်ဈေး' ကို အတိအကျ ခွဲထုတ်ပေးပြီးပါပြီ။`);
       } else {
@@ -171,7 +151,7 @@ export default function App() {
       console.error("Gemini Scan Error:", error);
       setAiStatus("❌ ပုံရိပ်ကို ဖတ်၍မရနိုင်ပါ။ Prompt သို့မဟုတ် API သတ်မှတ်ချက်ကို ပြန်စစ်ပါ။");
     } finally {
-      setLoadingAI(false);
+      loadingAI && setLoadingAI(false);
     }
   };
 
@@ -183,7 +163,7 @@ export default function App() {
         <header className="mb-8 border-b-2 border-blue-600 pb-4 flex justify-between items-center">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold text-blue-800">AI Smart Voucher Calculator</h1>
-            <p className="text-slate-500 text-sm mt-1">Gemini 2.5 Flash စနစ်သုံး ဝယ်ကုန်နှင့် ကာဂိုခ တွက်ချက်စနစ်</p>
+            <p className="text-slate-500 text-sm mt-1">Gemini 2.5 Flash စနစ်သုံး ဝယ်ကုန်နှင့် ကာဂိုခ တွက်ချက်စနစ် (Value-based Distribution)</p>
           </div>
           <div className="flex gap-2 print:hidden">
             <button onClick={handleClearAll} className="bg-rose-100 hover:bg-rose-200 text-rose-700 px-4 py-2 rounded text-sm font-semibold transition-colors">
@@ -202,8 +182,8 @@ export default function App() {
             <input type="number" step="0.01" value={exchangeRate} onChange={(e) => setExchangeRate(Number(e.target.value))} className="w-full border rounded p-2 text-lg font-bold text-blue-700 focus:outline-blue-500"/>
           </div>
           <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200">
-            <label className="block text-sm font-medium text-slate-600 mb-1">1 KG ကာဂိုခ (MMK)</label>
-            <input type="number" step="500" value={cargoRate} onChange={(e) => setCargoRate(Number(e.target.value))} className="w-full border rounded p-2 text-lg font-bold text-blue-700 focus:outline-blue-500"/>
+            <label className="block text-sm font-medium text-slate-600 mb-1">စုစုပေါင်း ကျသင့်ကာဂိုခ (MMK)</label>
+            <input type="number" step="1000" value={totalCargoInput} onChange={(e) => setTotalCargoInput(Number(e.target.value))} className="w-full border rounded p-2 text-lg font-bold text-blue-700 focus:outline-blue-500" placeholder="ဥပမာ- 450000"/>
           </div>
           <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200">
             <label className="block text-sm font-medium text-slate-600 mb-1">မှန်းခြေ အမြတ်ရာခိုင်နှုန်း (%)</label>
@@ -233,11 +213,10 @@ export default function App() {
         {/* Manual Add Form */}
         <section className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 mb-6 print:hidden">
           <h3 className="font-semibold text-slate-700 mb-2">➕ လက်ဖြင့် ပစ္စည်းထည့်ရန်</h3>
-          <form onSubmit={handleAddItem} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+          <form onSubmit={handleAddItem} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
             <input type="text" placeholder="ပစ္စည်းအမည်" required value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} className="border rounded p-2 text-sm focus:outline-blue-500"/>
             <input type="number" placeholder="အရေအတွက်" min="1" required value={newItem.qty || ''} onChange={e => setNewItem({...newItem, qty: Number(e.target.value)})} className="border rounded p-2 text-sm focus:outline-blue-500"/>
-            <input type="number" placeholder="မူရင်းဈေး (VND)" required value={newItem.vndPrice || ''} onChange={e => setNewItem({...newItem, vndPrice: Number(e.target.value)})} className="border rounded p-2 text-sm focus:outline-blue-500"/>
-            <input type="number" placeholder="အလေးချိန် (Grams - တစ်ထုပ်ချင်း)" required value={newItem.weightGrams || ''} onChange={e => setNewItem({...newItem, weightGrams: Number(e.target.value)})} className="border rounded p-2 text-sm focus:outline-blue-500"/>
+            <input type="number" placeholder="မူရင်းတစ်ယူနစ်ဈေး (VND)" required value={newItem.vndPrice || ''} onChange={e => setNewItem({...newItem, vndPrice: Number(e.target.value)})} className="border rounded p-2 text-sm focus:outline-blue-500"/>
             <button type="submit" className="bg-slate-700 hover:bg-slate-800 text-white font-medium py-2 rounded text-sm shadow transition-colors">ထည့်မည်</button>
           </form>
         </section>
@@ -249,8 +228,9 @@ export default function App() {
               <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 font-medium text-sm">
                 <th className="p-3">ပစ္စည်းအမည်</th>
                 <th className="p-3 text-center">အရေအတွက်</th>
-                <th className="p-3 text-right">မူရင်းဈေး (VND)</th>
-                <th className="p-3 text-right">အလေးချိန် (Grams)</th>
+                <th className="p-3 text-right">မူရင်းဝယ်ဈေး (VND)</th>
+                <th className="p-3 text-right">မူရင်းဝယ်ဈေး (MMK)</th>
+                <th className="p-3 text-right">ကာဂိုခ ခွဲဝေမှုဝေစု</th>
                 <th className="p-3 text-right">စုစုပေါင်းရင်းဈေး (MMK)</th>
                 <th className="p-3 text-right text-blue-700 bg-blue-50/50">အဝိုင်းကိန်းရောင်းဈေး (၁ ထုပ်)</th>
                 <th className="p-3 text-center print:hidden">လက္ခဏာ</th>
@@ -258,11 +238,18 @@ export default function App() {
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm">
               {items.map((item, index) => {
-                const itemTotalWeightKG = (item.weightGrams * item.qty) / 1000;
-                const itemCargoFee = itemTotalWeightKG * cargoRate;
-                const itemBaseMMK = (item.vndPrice * item.qty) / exchangeRate;
-                const itemTotalCostMMK = itemBaseMMK + itemCargoFee;
+                const itemTotalVND = item.vndPrice * item.qty;
+                
+                // 🚀 အဓိကပြင်ဆင်ချက်- မူရင်းဈေးအချိုးအစားအလိုက် ကာဂိုခကို ခွဲဝေတွက်ချက်ခြင်း (Value-based Cargo Distribution)
+                const itemCargoShareMMK = totalVND > 0 
+                  ? (itemTotalVND / totalVND) * currentCargoMMK 
+                  : 0;
+
+                const itemBaseMMK = itemTotalVND / exchangeRate;
+                const itemTotalCostMMK = itemBaseMMK + itemCargoShareMMK;
                 const costPerUnit = itemTotalCostMMK / item.qty;
+                
+                // အမြတ် % တင်ပြီး အဝိုင်းကိန်း ပြောင်းလဲခြင်း
                 const finalSellingPrice = roundToCleanMMK(costPerUnit * (1 + profitMargin / 100));
 
                 return (
@@ -282,21 +269,9 @@ export default function App() {
                       />
                     </td>
                     
-                    <td className="p-3 text-right">{(item.vndPrice * item.qty).toLocaleString()} VND</td>
-                    
-                    {/* Inline Weight Edit */}
-                    <td className="p-3 text-right">
-                      <input 
-                        type="number" value={item.weightGrams} 
-                        onChange={(e) => {
-                          const updated = [...items];
-                          updated[index].weightGrams = Number(e.target.value);
-                          setItems(updated);
-                        }}
-                        className="w-20 border rounded text-right p-1 text-amber-800 font-medium print:border-0"
-                      /> g
-                    </td>
-                    
+                    <td className="p-3 text-right">{itemTotalVND.toLocaleString()} VND</td>
+                    <td className="p-3 text-right">{Math.round(itemBaseMMK).toLocaleString()} ကျပ်</td>
+                    <td className="p-3 text-right text-amber-700 font-medium">{Math.round(itemCargoShareMMK).toLocaleString()} ကျပ်</td>
                     <td className="p-3 text-right">{Math.round(itemTotalCostMMK).toLocaleString()} ကျပ်</td>
                     <td className="p-3 text-right font-bold text-blue-700 text-base bg-blue-50/30">
                       {finalSellingPrice.toLocaleString()} ကျပ်
@@ -309,7 +284,7 @@ export default function App() {
               })}
               {items.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="text-center p-12 text-slate-400">ဘောက်ချာပုံတင်ပါ သို့မဟုတ် လက်ဖြင့် စာရင်းစတင်ထည့်သွင်းပါ။</td>
+                  <td colSpan={8} className="text-center p-12 text-slate-400">ဘောက်ချာပုံတင်ပါ သို့မဟုတ် လက်ဖြင့် စာရင်းစတင်ထည့်သွင်းပါ။</td>
                 </tr>
               )}
             </tbody>
@@ -325,20 +300,20 @@ export default function App() {
               <span className="font-semibold">{totalVND.toLocaleString()} VND</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-300">⚖️ စုစုပေါင်း အလေးချိန် (KG):</span>
-              <span className="font-semibold text-amber-400">{totalWeightKG.toFixed(2)} kg</span>
+              <span className="text-slate-300">💵 ပစ္စည်းစုစုပေါင်းရင်းဈေး (MMK):</span>
+              <span className="font-semibold">{Math.round(totalBaseMMK).toLocaleString()} ကျပ်</span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-300">✈️ စုစုပေါင်း ကာဂိုခ (MMK):</span>
-              <span className="font-semibold">{Math.round(totalCargoMMK).toLocaleString()} ကျပ်</span>
+              <span className="font-semibold text-amber-400">{currentCargoMMK.toLocaleString()} ကျပ်</span>
             </div>
           </div>
           
           <div className="flex flex-col justify-center items-end bg-slate-900/40 p-4 rounded border border-blue-500/20">
-            <span className="text-slate-400 text-xs uppercase font-bold tracking-wider mb-1">စုစုပေါင်း ခန့်မှန်းခြေ ကုန်ကျစရိတ်</span>
+            <span className="text-slate-400 text-xs uppercase font-bold tracking-wider mb-1">စုစုပေါင်း တွက်ချက်ပြီး ကုန်ကျစရိတ်</span>
             <span className="text-3xl font-bold text-emerald-400 mb-2">{Math.round(totalCostMMK).toLocaleString()} ကျပ်</span>
             <span className="text-[11px] text-slate-400 text-right">
-              * ငွေလဲနှုန်းသည် မူရင်းရင်းဈေးအပေါ်တွင်သာ သက်ရောက်မှုရှိပြီး၊ ကာဂိုခကို ကျပ်ငွေဖြင့် တိုက်ရိုက်တွက်ချက်ထားပါသည်။
+              * ကာဂိုခကို ပစ္စည်းတစ်ခုချင်းစီ၏ မူရင်းဝယ်ဈေး (Value Ratio) အပေါ် မူတည်၍ တရားမျှတစွာ အချိုးချ ခွဲဝေပေါင်းစပ်ပေးထားပါသည်။
             </span>
           </div>
         </section>
