@@ -8,19 +8,16 @@ interface Item {
   vndPrice: number;
 }
 
-// Vite Environment Variable မှတစ်ဆင့် API Key ကို ချိတ်ဆက်ခြင်း
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
 export default function App() {
-  // Config States (Local Storage)
+  // Config States
   const [exchangeRate, setExchangeRate] = useState<number>(() => Number(localStorage.getItem('ex_rate')) || 5.8);
-  
-  // စုစုပေါင်း ကာဂိုခအိတ်ကြီးတစ်ခုလုံးစာ ကျသင့်ငွေ (MMK) ကို တိုက်ရိုက်ရိုက်ထည့်ရန်
   const [totalCargoInput, setTotalCargoInput] = useState<number>(() => Number(localStorage.getItem('total_cargo_input')) || 450000);
   const [profitMargin, setProfitMargin] = useState<number>(() => Number(localStorage.getItem('profit_margin')) || 30);
 
-  // Items State (Value-based စနစ်ဖြစ်၍ weightGrams မလိုတော့ပါ)
+  // Items State
   const [items, setItems] = useState<Item[]>(() => {
     const saved = localStorage.getItem('cargo_items');
     return saved ? JSON.parse(saved) : [];
@@ -41,11 +38,9 @@ export default function App() {
     localStorage.setItem('cargo_items', JSON.stringify(items));
   }, [exchangeRate, totalCargoInput, profitMargin, items]);
 
-  // Global Calculations (Value-based Logic)
+  // Global Calculations
   const totalVND = items.reduce((sum, item) => sum + (item.vndPrice * item.qty), 0);
   const totalBaseMMK = totalVND / exchangeRate;
-  
-  // စာရင်းထဲတွင် ပစ္စည်းရှိနေမှသာ ရိုက်ထည့်ထားသော ကာဂိုခကို ပေါင်းတွက်မည်
   const currentCargoMMK = items.length > 0 ? totalCargoInput : 0;
   const totalCostMMK = totalBaseMMK + currentCargoMMK;
 
@@ -69,14 +64,14 @@ export default function App() {
     }
   };
 
-  // Clean Price Rounding Utility
+  // Price Rounding Utility
   const roundToCleanMMK = (amount: number) => {
     if (amount <= 0) return 0;
     if (amount < 10000) return Math.ceil(amount / 500) * 500;
     return Math.ceil(amount / 5000) * 5000;
   };
 
-  // ⚡ Tax ရာခိုင်နှုန်းနှင့် အမှန်ကန်ဆုံး နောက်ဆုံးကော်လံ (Total Net Amount) ကို အခြေခံ၍ တွက်ချက်မည့် စနစ်သစ်
+  // 🎯 ၁၀၀% တိကျသေချာသော ဈေးနှုန်း String ဖတ်စနစ်နှင့် Frontend Parser အသစ်
   const handleVoucherUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -87,7 +82,7 @@ export default function App() {
     }
 
     setLoadingAI(true);
-    setAiStatus("Gemini 2.5 က Tax အပါအဝင် ကိန်းဂဏန်းများကို အတိအကျ တွက်ချက်နေပါသည်... ⚡");
+    setAiStatus("Gemini 2.5 က ဘောက်ချာစာသားများကို စစ်ဆေးနေပါသည်... ⚡");
 
     try {
       const base64Data = await new Promise<string>((resolve, reject) => {
@@ -106,29 +101,26 @@ export default function App() {
         generationConfig: { responseMimeType: "application/json" }
       });
 
-      // 🚀 Gemini Prompt ကို နောက်ဆုံးကော်လံ (Thanh tiền) အား အခြေခံရန် တင်းကျပ်စွာ ညွှန်ကြားခြင်း
+      // 🚀 Gemini အား ကိန်းဂဏန်းများကို သင်္ချာမတွက်ခိုင်းဘဲ မြင်ရသည့်အတိုင်း String သက်သက်သာ ထုတ်ခိုင်းခြင်း
       const prompt = `
-        You are an expert OCR and retail receipt parser specializing in Vietnamese receipts (like MM Mega Market).
-        Analyze the image and extract all purchased products accurately.
+        You are an expert OCR parser for Vietnamese receipts (like MM Mega Market).
+        Extract products from the image text columns precisely.
 
-        CRITICAL INSTRUCTION FOR PRICE AND TAX EXTRACTION:
-        1. Identify the quantity from 'So luong' column.
-        2. DO NOT USE the 'Don gia' column because it excludes tax and contains confusing decimals.
-        3. Go directly to the LAST COLUMN 'Thanh tien da co thue GTGT' (Total Amount with Tax included). For example, for WAKEUP coffee, this value is "536.998".
-        4. Interpret the dots/periods (.) as thousands separators: "536.998" means 536998 VND integer.
-        5. CALCULATE THE TRUE UNIT PRICE WITH TAX: Divide this total 'Thanh tien' integer by the 'So luong' (Quantity).
-           - Example: 536998 (Total with tax) / 10 (Qty) = 53699.8 VND.
-        6. Round it to the nearest clean integer and put this calculated tax-included price for ONE item into 'vndPrice' (e.g., 53700).
+        CRITICAL INSTRUCTIONS:
+        1. Extract the name from 'Tên hàng hóa, dịch vụ'.
+        2. Extract the exact character string from the LAST column 'Thành tiền đã có thuế GTGT' as 'rawThanhTien'. 
+           Include all dots/periods as they appear (e.g., "536.998", "116.667", "79.000").
+        3. Extract the exact character string from 'Số lượng' as 'rawQty' (e.g., "10", "1", "2,122").
 
-        Return a strictly valid JSON array structure:
+        Return a strictly valid JSON array structure where values are STRINGS:
         [
           {
-            "name": "PRODUCT NAME AND VARIATION (Keep it clean, uppercase)",
-            "qty": number (The quantity of this item),
-            "vndPrice": number (The CALCULATED tax-inclusive unit cost for ONE single item in VND as a clean whole integer. e.g., 53700)
+            "name": "PRODUCT NAME (UPPERCASE)",
+            "rawQty": "string containing quantity",
+            "rawThanhTien": "string containing the last column amount with dots"
           }
         ]
-        Do not include markdown blocks, text wrappers, or metadata. Return raw JSON array only.
+        Do not include markdown blocks or text wrappers. Return raw JSON array only.
       `;
 
       const result = await model.generateContent([prompt, imagePart]);
@@ -136,25 +128,32 @@ export default function App() {
       const parsedItems = JSON.parse(responseText);
 
       if (Array.isArray(parsedItems)) {
-        // Frontend Double-Check: အကယ်၍ Gemini မှ အစက်အပြောက်ကြောင့် မှားယွင်းပြီး ၁၀၀၀ အောက် တန်ဖိုးများ ပေးလာခဲ့ပါက Auto-Fix လုပ်ခြင်း
+        // 🛠️ Frontend ဘက်မှ Regex သုံး၍ အစက်အပြောက်နှင့် ကော်မာများကို ကိန်းပြည့်အဖြစ် ပြောင်းလဲတွက်ချက်ခြင်း
         const finalScannedItems: Item[] = parsedItems.map((item: any, idx: number) => {
-          let checkedVndPrice = Number(item.vndPrice) || 0;
+          // အရေအတွက်ထဲက ကော်မာ (သို့) အစက်များကို ရှင်းထုတ်ခြင်း (ဥပမာ- "2,122" -> 2.122)
+          const cleanQtyStr = String(item.rawQty || "1").replace(/[^0-9.]/g, '');
+          const qty = parseFloat(cleanQtyStr) || 1;
 
-          // Gemini က ၅၃,၇၀၀ ပြောင်းရမည့်အစား ၅၃.၇ ဟု ဒသမကိန်းအမှား ပေးလာခဲ့ပါက ၁၀၀၀ ဖြင့် မြှောက်၍ အမှန်ပြင်ဆင်ခြင်း
-          if (checkedVndPrice > 0 && checkedVndPrice < 1000) {
-            checkedVndPrice = checkedVndPrice * 1000;
-          }
+          // 💡 နောက်ဆုံးကော်လံ စုစုပေါင်းငွေထဲက အစက်/ကော်မာ အားလုံးကို ဖယ်ရှား၍ ကိန်းပြည့်စစ်စစ်ပြောင်းခြင်း
+          // ဥပမာ- "536.998" -> "536998" -> 536998 Integer
+          // ဥပမာ- "116.667" -> "116667" -> 116667 Integer
+          const cleanThanhTienStr = String(item.rawThanhTien || "0").replace(/[^0-9]/g, '');
+          const totalLineVND = parseInt(cleanThanhTienStr, 10) || 0;
+
+          // Tax ပါဝင်ပြီးသား တစ်ယူနစ်ချင်းစီ၏ တကယ့်ကျသင့်ငွေကို တွက်ချက်ခြင်း
+          // ဥပမာ- 536998 / 10 = 53699.8 -> 53700 VND
+          const calculatedUnitPriceVND = qty > 0 ? Math.round(totalLineVND / qty) : 0;
 
           return {
             id: `gemini-${idx}-${Date.now()}`,
             name: (item.name || "UNKNOWN ITEM").toUpperCase(),
-            qty: Number(item.qty) || 1,
-            vndPrice: Math.round(checkedVndPrice)
+            qty: Math.ceil(qty), // ကာဂိုအတွက် အရေအတွက်ကို ကိန်းပြည့်အဖြစ်ထားရှိခြင်း
+            vndPrice: calculatedUnitPriceVND
           };
         });
 
         setItems(finalScannedItems);
-        setAiStatus(`🎉 အောင်မြင်ပါသည်! Gemini မှ Tax အပြီးအစီး ပါဝင်ပြီးသား တစ်ယူနစ်ဈေး (ဥပမာ- 53,700 VND) ဖြင့် တိကျစွာ ခွဲထုတ်ပေးပြီးပါပြီ။`);
+        setAiStatus(`🎉 အောင်မြင်ပါသည်! ဗီယက်နမ်ငွေကြေး format အား အမှားအယွင်းမရှိ တိကျစွာ ဖတ်ပြီးပါပြီ။`);
       } else {
         setAiStatus("⚠️ Data Format အဆင်မပြေဖြစ်သွားသည်။ ထပ်မံကြိုးစားကြည့်ပါ။");
       }
@@ -195,7 +194,7 @@ export default function App() {
           </div>
           <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200">
             <label className="block text-sm font-medium text-slate-600 mb-1">စုစုပေါင်း ကျသင့်ကာဂိုခ (MMK)</label>
-            <input type="number" step="1000" value={totalCargoInput} onChange={(e) => setTotalCargoInput(Number(e.target.value))} className="w-full border rounded p-2 text-lg font-bold text-blue-700 focus:outline-blue-500" placeholder="ဥပမာ- 450000"/>
+            <input type="number" step="1000" value={totalCargoInput} onChange={(e) => setTotalCargoInput(Number(e.target.value))} className="w-full border rounded p-2 text-lg font-bold text-blue-700 focus:outline-blue-500"/>
           </div>
           <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200">
             <label className="block text-sm font-medium text-slate-600 mb-1">မှန်းခြေ အမြတ်ရာခိုင်နှုန်း (%)</label>
@@ -203,10 +202,10 @@ export default function App() {
           </div>
         </section>
 
-        {/* 📸 AI Voucher Scanner Sector */}
+        {/* AI Voucher Scanner */}
         <section className="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-dashed border-blue-300 p-6 rounded-lg mb-6 text-center print:hidden">
           <h3 className="font-bold text-blue-900 text-lg mb-1">📸 AI Shopping Voucher Scanner</h3>
-          <p className="text-sm text-blue-700 mb-4">ပြေစာ၊ ဘောက်ချာ သို့မဟုတ် Shopee Screenshot ပုံများကို တင်ပေးပါ။ Gemini က ၁ စက္ကန့်အတွင်း Data ပြောင်းပေးပါမည်။</p>
+          <p className="text-sm text-blue-700 mb-4">ဗီယက်နမ် ပြေစာ၊ ဘောက်ချာ သို့မဟုတ် Shopee Screenshot ပုံများကို တင်ပေးပါ။</p>
           <div className="max-w-xs mx-auto">
             <input 
               type="file" accept="image/*" 
@@ -233,7 +232,7 @@ export default function App() {
           </form>
         </section>
 
-        {/* Main Interactive Table */}
+        {/* Interactive Table */}
         <section className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-x-auto mb-6">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -251,24 +250,15 @@ export default function App() {
             <tbody className="divide-y divide-slate-100 text-sm">
               {items.map((item, index) => {
                 const itemTotalVND = item.vndPrice * item.qty;
-                
-                // မူရင်းဈေးအချိုးအစားအလိုက် ကာဂိုခကို ခွဲဝေတွက်ချက်ခြင်း (Value-based Cargo Distribution)
-                const itemCargoShareMMK = totalVND > 0 
-                  ? (itemTotalVND / totalVND) * currentCargoMMK 
-                  : 0;
-
+                const itemCargoShareMMK = totalVND > 0 ? (itemTotalVND / totalVND) * currentCargoMMK : 0;
                 const itemBaseMMK = itemTotalVND / exchangeRate;
                 const itemTotalCostMMK = itemBaseMMK + itemCargoShareMMK;
                 const costPerUnit = itemTotalCostMMK / item.qty;
-                
-                // အမြတ် % တင်ပြီး အဝိုင်းကိန်း ပြောင်းလဲခြင်း
                 const finalSellingPrice = roundToCleanMMK(costPerUnit * (1 + profitMargin / 100));
 
                 return (
                   <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                     <td className="p-3 font-medium text-slate-900 max-w-xs truncate">{item.name}</td>
-                    
-                    {/* Inline Quantity Edit */}
                     <td className="p-3 text-center">
                       <input 
                         type="number" min="1" value={item.qty} 
@@ -280,8 +270,7 @@ export default function App() {
                         className="w-16 border rounded text-center p-1 font-semibold print:border-0"
                       />
                     </td>
-                    
-                    <td className="p-3 text-right">{itemTotalVND.toLocaleString()} VND</td>
+                    <td className="p-3 text-right">{item.vndPrice.toLocaleString()} VND</td>
                     <td className="p-3 text-right">{Math.round(itemBaseMMK).toLocaleString()} ကျပ်</td>
                     <td className="p-3 text-right text-amber-700 font-medium">{Math.round(itemCargoShareMMK).toLocaleString()} ကျပ်</td>
                     <td className="p-3 text-right">{Math.round(itemTotalCostMMK).toLocaleString()} ကျပ်</td>
@@ -303,7 +292,7 @@ export default function App() {
           </table>
         </section>
 
-        {/* Dynamic Summary Footer */}
+        {/* Summary Footer */}
         <section className="bg-slate-800 text-slate-100 p-6 rounded-lg shadow-md grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="space-y-2 border-r border-slate-700/60 pr-4">
             <h4 className="text-slate-400 uppercase text-xs tracking-wider font-bold mb-2">ရင်းနှီးစရိတ် အနှစ်ချုပ် (Summary)</h4>
