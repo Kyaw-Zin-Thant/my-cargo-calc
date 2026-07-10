@@ -8,6 +8,20 @@ interface Item {
   vndPrice: number;
 }
 
+interface CalculationResult {
+  items: Array<Item & {
+    itemTotalVND: number;
+    itemBaseMMK: number;
+    itemCargoShareMMK: number;
+    itemTotalCostMMK: number;
+    finalSellingPrice: number;
+  }>;
+  totalVND: number;
+  totalBaseMMK: number;
+  currentCargoMMK: number;
+  totalCostMMK: number;
+}
+
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
@@ -17,11 +31,14 @@ export default function App() {
   const [totalCargoInput, setTotalCargoInput] = useState<number>(() => Number(localStorage.getItem('total_cargo_input')) || 450000);
   const [profitMargin, setProfitMargin] = useState<number>(() => Number(localStorage.getItem('profit_margin')) || 30);
 
-  // Items State
+  // Items State (Raw data from scan or manual add)
   const [items, setItems] = useState<Item[]>(() => {
     const saved = localStorage.getItem('cargo_items');
     return saved ? JSON.parse(saved) : [];
   });
+
+  // calculated Results State (ခလုတ်နှိပ်မှသာ သိမ်းဆည်းမည့်နေရာ)
+  const [calcResult, setCalcResult] = useState<CalculationResult | null>(null);
 
   // Manual Form State
   const [newItem, setNewItem] = useState({ name: '', qty: 1, vndPrice: 0 });
@@ -30,19 +47,16 @@ export default function App() {
   const [loadingAI, setLoadingAI] = useState(false);
   const [aiStatus, setAiStatus] = useState('');
 
-  // Sync to LocalStorage
+  // Sync Items to LocalStorage
   useEffect(() => {
     localStorage.setItem('ex_rate', exchangeRate.toString());
     localStorage.setItem('total_cargo_input', totalCargoInput.toString());
     localStorage.setItem('profit_margin', profitMargin.toString());
     localStorage.setItem('cargo_items', JSON.stringify(items));
+    
+    // Items စာရင်း ပြောင်းလဲသွားပါက ရလဒ်ဟောင်းကို Clear လုပ်ပေးခြင်းဖြင့် တွက်ချက်မှုအသစ် ပြန်လုပ်ခိုင်းရန်
+    setCalcResult(null);
   }, [exchangeRate, totalCargoInput, profitMargin, items]);
-
-  // Global Calculations
-  const totalVND = items.reduce((sum, item) => sum + (item.vndPrice * item.qty), 0);
-  const totalBaseMMK = totalVND / exchangeRate;
-  const currentCargoMMK = items.length > 0 ? totalCargoInput : 0;
-  const totalCostMMK = totalBaseMMK + currentCargoMMK;
 
   // Manual Add Item
   const handleAddItem = (e: React.FormEvent) => {
@@ -61,6 +75,7 @@ export default function App() {
   const handleClearAll = () => {
     if (window.confirm("စာရင်းအားလုံးကို ဖျက်ပစ်ရန် သေချာပါသလား။")) {
       setItems([]);
+      setCalcResult(null);
     }
   };
 
@@ -71,7 +86,46 @@ export default function App() {
     return Math.ceil(amount / 5000) * 5000;
   };
 
-  // 🎯 ၁၀၀% တိကျသေချာသော ဈေးနှုန်း String ဖတ်စနစ်နှင့် Frontend Parser အသစ်
+  // ⚡ တွက်ချက်မှုခလုတ် (Calculate Button) နှိပ်မှသာ အလုပ်လုပ်မည့် Logic
+  const handleCalculateAll = () => {
+    if (items.length === 0) {
+      alert("တွက်ချက်ရန် ပစ္စည်းစာရင်း မရှိသေးပါ!");
+      return;
+    }
+
+    const totalVND = items.reduce((sum, item) => sum + (item.vndPrice * item.qty), 0);
+    const totalBaseMMK = totalVND / exchangeRate;
+    const currentCargoMMK = totalCargoInput;
+    const totalCostMMK = totalBaseMMK + currentCargoMMK;
+
+    const computedItems = items.map(item => {
+      const itemTotalVND = item.vndPrice * item.qty;
+      const itemCargoShareMMK = totalVND > 0 ? (itemTotalVND / totalVND) * currentCargoMMK : 0;
+      const itemBaseMMK = itemTotalVND / exchangeRate;
+      const itemTotalCostMMK = itemBaseMMK + itemCargoShareMMK;
+      const costPerUnit = itemTotalCostMMK / item.qty;
+      const finalSellingPrice = roundToCleanMMK(costPerUnit * (1 + profitMargin / 100));
+
+      return {
+        ...item,
+        itemTotalVND,
+        itemBaseMMK,
+        itemCargoShareMMK,
+        itemTotalCostMMK,
+        finalSellingPrice
+      };
+    });
+
+    setCalcResult({
+      items: computedItems,
+      totalVND,
+      totalBaseMMK,
+      currentCargoMMK,
+      totalCostMMK
+    });
+  };
+
+  // 🎯 ၁၀၀% တိကျသေချာသော ဈေးနှုန်း String ဖတ်စနစ်နှင့် Frontend Parser
   const handleVoucherUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -101,7 +155,6 @@ export default function App() {
         generationConfig: { responseMimeType: "application/json" }
       });
 
-      // 🚀 Gemini အား ကိန်းဂဏန်းများကို သင်္ချာမတွက်ခိုင်းဘဲ မြင်ရသည့်အတိုင်း String သက်သက်သာ ထုတ်ခိုင်းခြင်း
       const prompt = `
         You are an expert OCR parser for Vietnamese receipts (like MM Mega Market).
         Extract products from the image text columns precisely.
@@ -109,8 +162,8 @@ export default function App() {
         CRITICAL INSTRUCTIONS:
         1. Extract the name from 'Tên hàng hóa, dịch vụ'.
         2. Extract the exact character string from the LAST column 'Thành tiền đã có thuế GTGT' as 'rawThanhTien'. 
-           Include all dots/periods as they appear (e.g., "536.998", "116.667", "79.000").
-        3. Extract the exact character string from 'Số lượng' as 'rawQty' (e.g., "10", "1", "2,122").
+           Include all dots/periods as they appear (e.g., "536.998", "116.667").
+        3. Extract the exact character string from 'Số lượng' as 'rawQty'.
 
         Return a strictly valid JSON array structure where values are STRINGS:
         [
@@ -128,32 +181,27 @@ export default function App() {
       const parsedItems = JSON.parse(responseText);
 
       if (Array.isArray(parsedItems)) {
-        // 🛠️ Frontend ဘက်မှ Regex သုံး၍ အစက်အပြောက်နှင့် ကော်မာများကို ကိန်းပြည့်အဖြစ် ပြောင်းလဲတွက်ချက်ခြင်း
         const finalScannedItems: Item[] = parsedItems.map((item: any, idx: number) => {
-          // အရေအတွက်ထဲက ကော်မာ (သို့) အစက်များကို ရှင်းထုတ်ခြင်း (ဥပမာ- "2,122" -> 2.122)
           const cleanQtyStr = String(item.rawQty || "1").replace(/[^0-9.]/g, '');
           const qty = parseFloat(cleanQtyStr) || 1;
 
-          // 💡 နောက်ဆုံးကော်လံ စုစုပေါင်းငွေထဲက အစက်/ကော်မာ အားလုံးကို ဖယ်ရှား၍ ကိန်းပြည့်စစ်စစ်ပြောင်းခြင်း
-          // ဥပမာ- "536.998" -> "536998" -> 536998 Integer
-          // ဥပမာ- "116.667" -> "116667" -> 116667 Integer
           const cleanThanhTienStr = String(item.rawThanhTien || "0").replace(/[^0-9]/g, '');
           const totalLineVND = parseInt(cleanThanhTienStr, 10) || 0;
-
-          // Tax ပါဝင်ပြီးသား တစ်ယူနစ်ချင်းစီ၏ တကယ့်ကျသင့်ငွေကို တွက်ချက်ခြင်း
-          // ဥပမာ- 536998 / 10 = 53699.8 -> 53700 VND
           const calculatedUnitPriceVND = qty > 0 ? Math.round(totalLineVND / qty) : 0;
 
           return {
             id: `gemini-${idx}-${Date.now()}`,
             name: (item.name || "UNKNOWN ITEM").toUpperCase(),
-            qty: Math.ceil(qty), // ကာဂိုအတွက် အရေအတွက်ကို ကိန်းပြည့်အဖြစ်ထားရှိခြင်း
+            qty: Math.ceil(qty),
             vndPrice: calculatedUnitPriceVND
           };
         });
 
-        setItems(finalScannedItems);
-        setAiStatus(`🎉 အောင်မြင်ပါသည်! ဗီယက်နမ်ငွေကြေး format အား အမှားအယွင်းမရှိ တိကျစွာ ဖတ်ပြီးပါပြီ။`);
+        // စာရင်းဟောင်းထဲသို့ ပစ္စည်းအသစ်များအား ထည့်သွင်းခြင်း (မတွက်ချက်ရသေးပါ)
+        setItems(prevItems => [...prevItems, ...finalScannedItems]);
+        setAiStatus(`🎉 အောင်မြင်ပါသည်! စာရင်းထဲသို့ ထည့်ပြီးပါပြီ။ Review အရင်လုပ်နိုင်ပါသည်။`);
+        
+        e.target.value = "";
       } else {
         setAiStatus("⚠️ Data Format အဆင်မပြေဖြစ်သွားသည်။ ထပ်မံကြိုးစားကြည့်ပါ။");
       }
@@ -232,6 +280,16 @@ export default function App() {
           </form>
         </section>
 
+        {/* 🚀 Action Toolbar (Calculate Button Area) */}
+        <div className="flex justify-center mb-6 print:hidden">
+          <button 
+            onClick={handleCalculateAll}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-lg py-3 px-10 rounded-xl shadow-lg transform hover:scale-[1.02] transition-all flex items-center gap-2"
+          >
+            📊 Calculate Total & Selling Price
+          </button>
+        </div>
+
         {/* Interactive Table */}
         <section className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-x-auto mb-6">
           <table className="w-full text-left border-collapse">
@@ -239,7 +297,7 @@ export default function App() {
               <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 font-medium text-sm">
                 <th className="p-3">ပစ္စည်းအမည်</th>
                 <th className="p-3 text-center">အရေအတွက်</th>
-                <th className="p-3 text-right">မူရင်းဝယ်ဈေး (VND)</th>
+                <th className="p-3 text-right">မူရင်းတစ်ယူနစ်ဈေး (VND)</th>
                 <th className="p-3 text-right">မူရင်းဝယ်ဈေး (MMK)</th>
                 <th className="p-3 text-right">ကာဂိုခ ခွဲဝေမှုဝေစု</th>
                 <th className="p-3 text-right">စုစုပေါင်းရင်းဈေး (MMK)</th>
@@ -249,16 +307,14 @@ export default function App() {
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm">
               {items.map((item, index) => {
-                const itemTotalVND = item.vndPrice * item.qty;
-                const itemCargoShareMMK = totalVND > 0 ? (itemTotalVND / totalVND) * currentCargoMMK : 0;
-                const itemBaseMMK = itemTotalVND / exchangeRate;
-                const itemTotalCostMMK = itemBaseMMK + itemCargoShareMMK;
-                const costPerUnit = itemTotalCostMMK / item.qty;
-                const finalSellingPrice = roundToCleanMMK(costPerUnit * (1 + profitMargin / 100));
+                // အကယ်၍ ခလုတ်နှိပ်ပြီး တွက်ချက်ပြီးသား Result ရှိနေပါက ၎င်းရလဒ်များကို ယူသုံးမည်
+                const calculatedItem = calcResult?.items.find(c => c.id === item.id);
 
                 return (
                   <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                     <td className="p-3 font-medium text-slate-900 max-w-xs truncate">{item.name}</td>
+                    
+                    {/* Quantity Selector */}
                     <td className="p-3 text-center">
                       <input 
                         type="number" min="1" value={item.qty} 
@@ -270,13 +326,30 @@ export default function App() {
                         className="w-16 border rounded text-center p-1 font-semibold print:border-0"
                       />
                     </td>
-                    <td className="p-3 text-right">{item.vndPrice.toLocaleString()} VND</td>
-                    <td className="p-3 text-right">{Math.round(itemBaseMMK).toLocaleString()} ကျပ်</td>
-                    <td className="p-3 text-right text-amber-700 font-medium">{Math.round(itemCargoShareMMK).toLocaleString()} ကျပ်</td>
-                    <td className="p-3 text-right">{Math.round(itemTotalCostMMK).toLocaleString()} ကျပ်</td>
-                    <td className="p-3 text-right font-bold text-blue-700 text-base bg-blue-50/30">
-                      {finalSellingPrice.toLocaleString()} ကျပ်
+                    
+                    {/* Unit Price (VND) */}
+                    <td className="p-3 text-right font-medium text-slate-700">
+                      {(item.vndPrice).toLocaleString()} VND
                     </td>
+
+                    {/* Calculated values (ခလုတ်မနှိပ်ရသေးပါက "---" ဟု ပြထားမည်) */}
+                    <td className="p-3 text-right text-slate-500">
+                      {calculatedItem ? `${Math.round(calculatedItem.itemBaseMMK).toLocaleString()} ကျပ်` : "---"}
+                    </td>
+                    <td className="p-3 text-right text-amber-700 font-medium">
+                      {calculatedItem ? `${Math.round(calculatedItem.itemCargoShareMMK).toLocaleString()} ကျပ်` : "---"}
+                    </td>
+                    <td className="p-3 text-right text-slate-500">
+                      {calculatedItem ? `${Math.round(calculatedItem.itemTotalCostMMK).toLocaleString()} ကျပ်` : "---"}
+                    </td>
+                    
+                    {/* Final Selling Price Display */}
+                    <td className="p-3 text-right font-bold text-blue-700 text-base bg-blue-50/30">
+                      {calculatedItem ? `${calculatedItem.finalSellingPrice.toLocaleString()} ကျပ်` : (
+                        <span className="text-slate-400 text-xs font-normal italic">Calculate နှိပ်ရန်...</span>
+                      )}
+                    </td>
+                    
                     <td className="p-3 text-center print:hidden">
                       <button onClick={() => handleDeleteItem(item.id)} className="text-rose-500 hover:text-rose-700 font-medium p-1">❌</button>
                     </td>
@@ -298,21 +371,29 @@ export default function App() {
             <h4 className="text-slate-400 uppercase text-xs tracking-wider font-bold mb-2">ရင်းနှီးစရိတ် အနှစ်ချုပ် (Summary)</h4>
             <div className="flex justify-between">
               <span className="text-slate-300">🛒 စုစုပေါင်း ပစ္စည်းရင်းဈေး (VND):</span>
-              <span className="font-semibold">{totalVND.toLocaleString()} VND</span>
+              <span className="font-semibold">
+                {calcResult ? `${calcResult.totalVND.toLocaleString()} VND` : "---"}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-300">💵 ပစ္စည်းစုစုပေါင်းရင်းဈေး (MMK):</span>
-              <span className="font-semibold">{Math.round(totalBaseMMK).toLocaleString()} ကျပ်</span>
+              <span className="font-semibold">
+                {calcResult ? `${Math.round(calcResult.totalBaseMMK).toLocaleString()} ကျပ်` : "---"}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-300">✈️ စုစုပေါင်း ကာဂိုခ (MMK):</span>
-              <span className="font-semibold text-amber-400">{currentCargoMMK.toLocaleString()} ကျပ်</span>
+              <span className="font-semibold text-amber-400">
+                {calcResult ? `${calcResult.currentCargoMMK.toLocaleString()} ကျပ်` : "---"}
+              </span>
             </div>
           </div>
           
           <div className="flex flex-col justify-center items-end bg-slate-900/40 p-4 rounded border border-blue-500/20">
             <span className="text-slate-400 text-xs uppercase font-bold tracking-wider mb-1">စုစုပေါင်း တွက်ချက်ပြီး ကုန်ကျစရိတ်</span>
-            <span className="text-3xl font-bold text-emerald-400 mb-2">{Math.round(totalCostMMK).toLocaleString()} ကျပ်</span>
+            <span className="text-3xl font-bold text-emerald-400 mb-2">
+              {calcResult ? `${Math.round(calcResult.totalCostMMK).toLocaleString()} ကျပ်` : "---"}
+            </span>
             <span className="text-[11px] text-slate-400 text-right">
               * ကာဂိုခကို ပစ္စည်းတစ်ခုချင်းစီ၏ မူရင်းဝယ်ဈေး (Value Ratio) အပေါ် မူတည်၍ တရားမျှတစွာ အချိုးချ ခွဲဝေပေါင်းစပ်ပေးထားပါသည်။
             </span>
