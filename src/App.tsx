@@ -5,7 +5,7 @@ interface Item {
   id: string;
   name: string;
   qty: number;
-  vndPrice: number;
+  vndPrice: number; // စုစုပေါင်း ဝယ်ယူခဲ့သည့် ပမာဏ (Line Total VND)
 }
 
 interface CalculationResult {
@@ -56,11 +56,43 @@ export default function App() {
     setCalcResult(null);
   }, [exchangeRate, totalCargoInput, profitMargin, items]);
 
-  // Manual Add Item
+  // ✨ နာမည်တူပါက စာရင်းထဲတွင် အလိုအလျောက် ပေါင်းစပ်ပေးမည့် Helper Function (Merge Helper)
+  const mergeIncomingItems = (currentItems: Item[], newItems: Item[]): Item[] => {
+    const mergedMap = new Map<string, Item>();
+
+    // လက်ရှိ ရှိပြီးသား ပစ္စည်းများကို Map ထဲသို့ ထည့်ခြင်း
+    currentItems.forEach(item => {
+      mergedMap.set(item.name.toUpperCase().trim(), { ...item });
+    });
+
+    // ပစ္စည်းအသစ်များကို စစ်ဆေး၍ နာမည်တူပါက ပေါင်းခြင်း
+    newItems.forEach(newItem => {
+      const normalizedName = newItem.name.toUpperCase().trim();
+      if (mergedMap.has(normalizedName)) {
+        const existing = mergedMap.get(normalizedName)!;
+        existing.qty += newItem.qty;
+        existing.vndPrice += newItem.vndPrice; // စုစုပေါင်းကျသင့်ငွေချင်း ပေါင်းစပ်မည်
+      } else {
+        mergedMap.set(normalizedName, { ...newItem });
+      }
+    });
+
+    return Array.from(mergedMap.values());
+  };
+
+  // Manual Add Item (လက်ဖြင့်ထည့်ရာတွင်လည်း နာမည်တူက ပေါင်းပေးမည်)
   const handleAddItem = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newItem.name) return;
-    setItems([...items, { ...newItem, id: `manual-${Date.now()}` }]);
+
+    const formattedItem: Item = {
+      id: `manual-${Date.now()}`,
+      name: newItem.name.toUpperCase().trim(),
+      qty: newItem.qty,
+      vndPrice: newItem.vndPrice
+    };
+
+    setItems(prevItems => mergeIncomingItems(prevItems, [formattedItem]));
     setNewItem({ name: '', qty: 1, vndPrice: 0 });
   };
 
@@ -97,13 +129,11 @@ export default function App() {
     const totalCostMMK = totalBaseMMK + currentCargoMMK;
 
     const computedItems = items.map(item => {
-      // ⚠️ vndPrice သည် စုစုပေါင်းဝယ်ယူခဲ့သည့် ပမာဏ (Line Total) ဖြစ်သောကြောင့် တိုက်ရိုက်သုံးသည်
       const itemTotalVND = item.vndPrice;
       const itemCargoShareMMK = totalVND > 0 ? (itemTotalVND / totalVND) * currentCargoMMK : 0;
       const itemBaseMMK = itemTotalVND / exchangeRate;
       const itemTotalCostMMK = itemBaseMMK + itemCargoShareMMK;
       
-      // တစ်ယူနစ်ချင်းစီ၏ ရောင်းဈေးကိုရှာရန် စုစုပေါင်းကုန်ကျစရိတ်ကို အရေအတွက် (Qty) ဖြင့်စားသည်
       const costPerUnit = itemTotalCostMMK / item.qty;
       const finalSellingPrice = roundToCleanMMK(costPerUnit * (1 + profitMargin / 100));
 
@@ -126,7 +156,7 @@ export default function App() {
     });
   };
 
-  // 🎯 Visual Rightmost Positioning စနစ်သုံး OCR Parser
+  // OCR Parser စနစ် (Rightmost Final Column Focused)
   const handleVoucherUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -137,7 +167,7 @@ export default function App() {
     }
 
     setLoadingAI(true);
-    setAiStatus("Gemini 2.5 က ညာဘက်အစွန်းဆုံး Final Column ကို ပစ်မှတ်ထား၍ ဖတ်နေပါသည်... ⚡");
+    setAiStatus("Gemini 2.5 က ညာဘက်အစွန်းဆုံးကော်လံကို စစ်ဆေးနေပါသည်... ⚡");
 
     try {
       const base64Data = await new Promise<string>((resolve, reject) => {
@@ -185,26 +215,25 @@ export default function App() {
       const parsedItems = JSON.parse(responseText);
 
       if (Array.isArray(parsedItems)) {
-        const finalScannedItems: Item[] = parsedItems.map((item: any, idx: number) => {
-          // Quantity handling (0,310 ကဲ့သို့ float ဖြစ်စေ၊ integer ဖြစ်စေ အဝိုင်းကိန်းပြောင်းသည်)
+        const scannedItemsBuffer: Item[] = parsedItems.map((item: any, idx: number) => {
           const cleanQtyStr = String(item.qty || "1").replace(/[^0-9.]/g, '').replace(',', '.');
           const parsedQty = parseFloat(cleanQtyStr) || 1;
           const qty = parsedQty < 1 ? 1 : Math.ceil(parsedQty);
 
-          // ညာဘက်အစွန်းဆုံးမှ ရလာသော Final Line Price အား Integer သို့ ပြောင်းလဲခြင်း
           const cleanPriceStr = String(item.finalLinePriceVND || "0").replace(/[^0-9]/g, '');
           const actualLineTotalVND = parseInt(cleanPriceStr, 10) || 0;
 
           return {
             id: `gemini-${idx}-${Date.now()}`,
-            name: (item.name || "UNKNOWN ITEM").toUpperCase(),
+            name: (item.name || "UNKNOWN ITEM").toUpperCase().trim(),
             qty: qty, 
-            vndPrice: actualLineTotalVND // 👈 အမှန်တကယ်ကျသင့်ငွေ (39,990 သို့မဟုတ် 268,499) ကို တိုက်ရိုက်ယူသည်
+            vndPrice: actualLineTotalVND
           };
         });
 
-        setItems(prevItems => [...prevItems, ...finalScannedItems]);
-        setAiStatus(`🎉 အောင်မြင်ပါသည်! ကော်လံနေရာမှန်အတိုင်း ပစ္စည်းစာရင်းကို တိကျစွာ ဆွဲထုတ်ပြီးပါပြီ။`);
+        // 🎯 ✨ စကန်ဖတ်ပြီးရလာသောစာရင်းကို ရှိပြီးသားစာရင်းဟောင်းနှင့် နာမည်တူပါက ပေါင်းစပ်လိုက်ခြင်း
+        setItems(prevItems => mergeIncomingItems(prevItems, scannedItemsBuffer));
+        setAiStatus(`🎉 အောင်မြင်ပါသည်! ပစ္စည်းစာရင်းအသစ်များကို ပေါင်းစပ်ထည့်သွင်းပြီးပါပြီ။`);
         e.target.value = "";
       } else {
         setAiStatus("⚠️ Data Format အဆင်မပြေဖြစ်သွားသည်။ ထပ်မံကြိုးစားကြည့်ပါ။");
@@ -226,7 +255,7 @@ export default function App() {
         <header className="mb-8 border-b-2 border-blue-600 pb-4 flex justify-between items-center">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold text-blue-800">AI Smart Voucher Calculator</h1>
-            <p className="text-slate-500 text-sm mt-1">Gemini 2.5 Flash စနစ်သုံး ဝယ်ကုန်နှင့် ကာဂိုခ တွက်ချက်စနစ် (Rightmost-Column Focused)</p>
+            <p className="text-slate-500 text-sm mt-1">Gemini 2.5 Flash စနစ်သုံး ဝယ်ကုန်နှင့် ကာဂိုခ တွက်ချက်စနစ် (Smart Item Merging Enabled)</p>
           </div>
           <div className="flex gap-2 print:hidden">
             <button onClick={handleClearAll} className="bg-rose-100 hover:bg-rose-200 text-rose-700 px-4 py-2 rounded text-sm font-semibold transition-colors">
@@ -257,7 +286,7 @@ export default function App() {
         {/* AI Voucher Scanner */}
         <section className="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-dashed border-blue-300 p-6 rounded-lg mb-6 text-center print:hidden">
           <h3 className="font-bold text-blue-900 text-lg mb-1">📸 AI Shopping Voucher Scanner</h3>
-          <p className="text-sm text-blue-700 mb-4">ဗီယက်နမ် ပြေစာ သို့မဟုတ် ရလဒ် Screenshot ပုံများကို တင်ပေးပါ။ (Position Error Fixed)</p>
+          <p className="text-sm text-blue-700 mb-4">ဘောက်ချာထပ်မံတင်ပါက နာမည်တူများကို စနစ်က အလိုအလျောက် ပေါင်းစပ်ပေးသွားမည် ဖြစ်သည်။</p>
           <div className="max-w-xs mx-auto">
             <input 
               type="file" accept="image/*" 
