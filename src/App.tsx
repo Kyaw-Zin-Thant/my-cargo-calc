@@ -47,7 +47,7 @@ export default function App() {
   const [loadingAI, setLoadingAI] = useState(false);
   const [aiStatus, setAiStatus] = useState('');
 
-  // Sync Items to LocalStorage
+  // Sync Settings to LocalStorage
   useEffect(() => {
     localStorage.setItem('ex_rate', exchangeRate.toString());
     localStorage.setItem('total_cargo_input', totalCargoInput.toString());
@@ -91,16 +91,19 @@ export default function App() {
       return;
     }
 
-    const totalVND = items.reduce((sum, item) => sum + (item.vndPrice * item.qty), 0);
+    const totalVND = items.reduce((sum, item) => sum + item.vndPrice, 0);
     const totalBaseMMK = totalVND / exchangeRate;
     const currentCargoMMK = totalCargoInput;
     const totalCostMMK = totalBaseMMK + currentCargoMMK;
 
     const computedItems = items.map(item => {
-      const itemTotalVND = item.vndPrice * item.qty;
+      // ⚠️ vndPrice သည် စုစုပေါင်းဝယ်ယူခဲ့သည့် ပမာဏ (Line Total) ဖြစ်သောကြောင့် တိုက်ရိုက်သုံးသည်
+      const itemTotalVND = item.vndPrice;
       const itemCargoShareMMK = totalVND > 0 ? (itemTotalVND / totalVND) * currentCargoMMK : 0;
       const itemBaseMMK = itemTotalVND / exchangeRate;
       const itemTotalCostMMK = itemBaseMMK + itemCargoShareMMK;
+      
+      // တစ်ယူနစ်ချင်းစီ၏ ရောင်းဈေးကိုရှာရန် စုစုပေါင်းကုန်ကျစရိတ်ကို အရေအတွက် (Qty) ဖြင့်စားသည်
       const costPerUnit = itemTotalCostMMK / item.qty;
       const finalSellingPrice = roundToCleanMMK(costPerUnit * (1 + profitMargin / 100));
 
@@ -123,7 +126,7 @@ export default function App() {
     });
   };
 
-  // 🎯 တိကျသေချာသော ဝယ်ဈေးစုစုပေါင်း (Line Total) ပေါ်အခြေခံသည့် OCR Parser စနစ်
+  // 🎯 Visual Rightmost Positioning စနစ်သုံး OCR Parser
   const handleVoucherUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -134,7 +137,7 @@ export default function App() {
     }
 
     setLoadingAI(true);
-    setAiStatus("Gemini 2.5 က ဘောက်ချာစာသားများကို စစ်ဆေးနေပါသည်... ⚡");
+    setAiStatus("Gemini 2.5 က ညာဘက်အစွန်းဆုံး Final Column ကို ပစ်မှတ်ထား၍ ဖတ်နေပါသည်... ⚡");
 
     try {
       const base64Data = await new Promise<string>((resolve, reject) => {
@@ -154,23 +157,25 @@ export default function App() {
       });
 
       const prompt = `
-        You are an expert OCR parser for MM Mega Market Vietnam receipts.
-        Analyze each printed item row carefully.
-        
-        CRITICAL INSTRUCTION:
-        The last column 'Thanh tiền đã có thuế GTGT' represents the absolute TOTAL FINAL PRICE for that entire row line (e.g., if quantity is 5 or 10, this price is the full combined amount for all 5 or 10 items).
-        
-        Extract the following:
-        1. 'name': The item name (e.g. "CAFE WAKEUP S.GON 19G*24GOI*1B").
-        2. 'qty': The quantity from the 'Số lượng' column. Extract as a clean number (e.g., 5, 10, or 2.122 for weight).
-        3. 'lineTotalVND': The exact total price from the LAST column ('Thanh tiền đã có thuế GTGT'). Extract the raw character string with all dots included (e.g., "268.499" or "536.998").
+        You are an expert OCR parser specialized in reading structured shopping receipts.
+        Your absolute priority is to capture the Correct Final Line Total from the RIGHTMOST edge of each item row.
 
-        Return a strictly valid raw JSON array structure only:
+        VISUAL POSITIONING RULE:
+        - Each item block has a name row, followed by a numbers row.
+        - On the numbers row, there are multiple numbers (e.g., [Unit Price] [Quantity] [Tax Code] [Final Total]).
+        - The VERY LAST number on the right side of that line is the 'Thanh tiền' (Final Line Price). 
+        - NEVER pick the first number (Unit Price). ALWAYS pick the last number on that line.
+
+        EXAMPLES BASED ON THE IMAGE:
+        - For 'NGO TA (NGO RI) DALAT': The numbers row shows "129.000  0,310  0  39.990". The rightmost/last number is "39.990". You MUST pick "39.990".
+        - For 'CAFE WAKEUP S.GON...': The numbers row shows "53.700  5  0  268.499". The rightmost/last number is "268.499". You MUST pick "268.499".
+
+        Extract into this strict JSON array structure only:
         [
           {
-            "name": "ITEM NAME",
-            "qty": "number or float string",
-            "lineTotalVND": "string with dots"
+            "name": "EXACT ITEM NAME",
+            "qty": "Extract the quantity value string from 'Số lượng' column, e.g., '0,310' or '5'",
+            "finalLinePriceVND": "The absolute RIGHTMOST final number on that line with dots included"
           }
         ]
       `;
@@ -181,27 +186,25 @@ export default function App() {
 
       if (Array.isArray(parsedItems)) {
         const finalScannedItems: Item[] = parsedItems.map((item: any, idx: number) => {
-          // အရေအတွက်ကို Clean လုပ်ခြင်း
-          const cleanQtyStr = String(item.qty || "1").replace(/[^0-9.]/g, '');
-          const qty = parseFloat(cleanQtyStr) || 1;
+          // Quantity handling (0,310 ကဲ့သို့ float ဖြစ်စေ၊ integer ဖြစ်စေ အဝိုင်းကိန်းပြောင်းသည်)
+          const cleanQtyStr = String(item.qty || "1").replace(/[^0-9.]/g, '').replace(',', '.');
+          const parsedQty = parseFloat(cleanQtyStr) || 1;
+          const qty = parsedQty < 1 ? 1 : Math.ceil(parsedQty);
 
-          // စုစုပေါင်းလိုင်းကျသင့်ငွေ (Last Column) ကို ဂဏန်းစစ်စစ်ပြောင်းခြင်း
-          const cleanLineTotalStr = String(item.lineTotalVND || "0").replace(/[^0-9]/g, '');
-          const totalLineAmountVND = parseInt(cleanLineTotalStr, 10) || 0;
-          
-          // ✨ ယူနစ်တစ်ခုချင်းစီ၏ မူရင်းရင်းဈေးမှန်ကို ပြန်လည်ရှာဖွေခြင်း (Total Amount / Qty)
-          const calculatedUnitPriceVND = qty > 0 ? Math.round(totalLineAmountVND / qty) : totalLineAmountVND;
+          // ညာဘက်အစွန်းဆုံးမှ ရလာသော Final Line Price အား Integer သို့ ပြောင်းလဲခြင်း
+          const cleanPriceStr = String(item.finalLinePriceVND || "0").replace(/[^0-9]/g, '');
+          const actualLineTotalVND = parseInt(cleanPriceStr, 10) || 0;
 
           return {
             id: `gemini-${idx}-${Date.now()}`,
             name: (item.name || "UNKNOWN ITEM").toUpperCase(),
-            qty: Math.ceil(qty), // ကီလိုဂရမ်ဆိုလျှင်လည်း အဝိုင်းကိန်းသို့ ပြောင်းပေးမည်
-            vndPrice: calculatedUnitPriceVND
+            qty: qty, 
+            vndPrice: actualLineTotalVND // 👈 အမှန်တကယ်ကျသင့်ငွေ (39,990 သို့မဟုတ် 268,499) ကို တိုက်ရိုက်ယူသည်
           };
         });
 
         setItems(prevItems => [...prevItems, ...finalScannedItems]);
-        setAiStatus(`🎉 အောင်မြင်ပါသည်! စာရင်းထဲသို့ ပစ္စည်းအသစ်များ အဝိုင်းကိန်းအတိုင်း တိကျစွာ ထည့်သွင်းပြီးပါပြီ။`);
+        setAiStatus(`🎉 အောင်မြင်ပါသည်! ကော်လံနေရာမှန်အတိုင်း ပစ္စည်းစာရင်းကို တိကျစွာ ဆွဲထုတ်ပြီးပါပြီ။`);
         e.target.value = "";
       } else {
         setAiStatus("⚠️ Data Format အဆင်မပြေဖြစ်သွားသည်။ ထပ်မံကြိုးစားကြည့်ပါ။");
@@ -223,7 +226,7 @@ export default function App() {
         <header className="mb-8 border-b-2 border-blue-600 pb-4 flex justify-between items-center">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold text-blue-800">AI Smart Voucher Calculator</h1>
-            <p className="text-slate-500 text-sm mt-1">Gemini 2.5 Flash စနစ်သုံး ဝယ်ကုန်နှင့် ကာဂိုခ တွက်ချက်စနစ် (Value-based Distribution)</p>
+            <p className="text-slate-500 text-sm mt-1">Gemini 2.5 Flash စနစ်သုံး ဝယ်ကုန်နှင့် ကာဂိုခ တွက်ချက်စနစ် (Rightmost-Column Focused)</p>
           </div>
           <div className="flex gap-2 print:hidden">
             <button onClick={handleClearAll} className="bg-rose-100 hover:bg-rose-200 text-rose-700 px-4 py-2 rounded text-sm font-semibold transition-colors">
@@ -254,7 +257,7 @@ export default function App() {
         {/* AI Voucher Scanner */}
         <section className="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-dashed border-blue-300 p-6 rounded-lg mb-6 text-center print:hidden">
           <h3 className="font-bold text-blue-900 text-lg mb-1">📸 AI Shopping Voucher Scanner</h3>
-          <p className="text-sm text-blue-700 mb-4">ဗီယက်နမ် ပြေစာ၊ ဘောက်ချာ သို့မဟုတ် Shopee Screenshot ပုံများကို တင်ပေးပါ။</p>
+          <p className="text-sm text-blue-700 mb-4">ဗီယက်နမ် ပြေစာ သို့မဟုတ် ရလဒ် Screenshot ပုံများကို တင်ပေးပါ။ (Position Error Fixed)</p>
           <div className="max-w-xs mx-auto">
             <input 
               type="file" accept="image/*" 
@@ -276,7 +279,7 @@ export default function App() {
           <form onSubmit={handleAddItem} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
             <input type="text" placeholder="ပစ္စည်းအမည်" required value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} className="border rounded p-2 text-sm focus:outline-blue-500"/>
             <input type="number" placeholder="အရေအတွက်" min="1" required value={newItem.qty || ''} onChange={e => setNewItem({...newItem, qty: Number(e.target.value)})} className="border rounded p-2 text-sm focus:outline-blue-500"/>
-            <input type="number" placeholder="မူရင်းတစ်ယူနစ်ဈေး (VND)" required value={newItem.vndPrice || ''} onChange={e => setNewItem({...newItem, vndPrice: Number(e.target.value)})} className="border rounded p-2 text-sm focus:outline-blue-500"/>
+            <input type="number" placeholder="ဝယ်ယူခဲ့သည့် စုစုပေါင်း金額 (VND)" required value={newItem.vndPrice || ''} onChange={e => setNewItem({...newItem, vndPrice: Number(e.target.value)})} className="border rounded p-2 text-sm focus:outline-blue-500"/>
             <button type="submit" className="bg-slate-700 hover:bg-slate-800 text-white font-medium py-2 rounded text-sm shadow transition-colors">ထည့်မည်</button>
           </form>
         </section>
@@ -297,12 +300,12 @@ export default function App() {
             <thead>
               <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 font-medium text-sm">
                 <th className="p-3">ပစ္စည်းအမည်</th>
-                <th className="p-3 text-center">အရေအတွက်</th>
-                <th className="p-3 text-right">မူရင်းတစ်ယူနစ်ဈေး (VND)</th>
-                <th className="p-3 text-right">မူရင်းဝယ်ဈေး (MMK)</th>
+                <th className="p-3 text-center">အရေအတွက် (Qty)</th>
+                <th className="p-3 text-right">စုစုပေါင်းဝယ်ဈေး (VND)</th>
+                <th className="p-3 text-right">ဝယ်ဈေးစုစုပေါင်း (MMK)</th>
                 <th className="p-3 text-right">ကာဂိုခ ခွဲဝေမှုဝေစု</th>
                 <th className="p-3 text-right">စုစုပေါင်းရင်းဈေး (MMK)</th>
-                <th className="p-3 text-right text-blue-700 bg-blue-50/50">အဝိုင်းကိန်းရောင်းဈေး (၁ ထုပ်)</th>
+                <th className="p-3 text-right text-blue-700 bg-blue-50/50">အဝိုင်းကိန်းရောင်းဈေး (၁ ခုစာ)</th>
                 <th className="p-3 text-center print:hidden">လက္ခဏာ</th>
               </tr>
             </thead>
@@ -386,7 +389,7 @@ export default function App() {
               {calcResult ? `${Math.round(calcResult.totalCostMMK).toLocaleString()} ကျပ်` : "---"}
             </span>
             <span className="text-[11px] text-slate-400 text-right">
-              * ကာဂိုခကို ပစ္စည်းတစ်ခုချင်းစီ၏ မူရင်းဝယ်ဈေး (Value Ratio) အပေါ် မူတည်၍ တရားမျှတစွာ အချိုးချ ခွဲဝေပေါင်းစပ်ပေးထားပါသည်။
+              * ကာဂိုခကို ပစ္စည်းတစ်ခုချင်းစီ၏ စုစုပေါင်းဝယ်ယူခဲ့သည့် တန်ဖိုးအချိုးအစား (Value Ratio) အပေါ် မူတည်၍ တရားမျှတစွာ ခွဲဝေတွက်ချက်ပေးထားပါသည်။
             </span>
           </div>
         </section>
