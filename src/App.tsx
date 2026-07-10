@@ -106,11 +106,19 @@ export default function App() {
         generationConfig: { responseMimeType: "application/json" }
       });
 
+      // ၃။ Vietnamese Currency Format အား တိတိကျကျ ဖတ်ခိုင်းသည့် Prompt အသစ်
       const prompt = `
         You are an expert OCR and retail receipt parser. 
         Analyze the provided image (it could be a retail receipt like MM Mega Market or an e-commerce screenshot like Shopee).
         
         Extract all individual items purchased or selected.
+        
+        CRITICAL INSTRUCTION FOR VIETNAMESE CURRENCY (VND):
+        - Vietnamese receipts use periods/dots (.) as thousands separators. (e.g., "536.998" means 536998 VND, NOT 536.998).
+        - You MUST remove all dots (.) or commas (,) from the price before putting it into 'vndPrice'. 
+        - For example: "536.998" -> 536998, "26.500" -> 26500, "1.250.000" -> 1250000.
+        - Ensure 'vndPrice' is a whole integer number (e.g., 536998).
+
         CRITICAL INSTRUCTION FOR RETAIL RECEIPTS:
         - Look closely at the numbers under the product name.
         - DO NOT confuse 'Thanh tien' (Total Line Amount) with 'Don gia' / 'Gia' (Unit Price).
@@ -121,7 +129,7 @@ export default function App() {
           {
             "name": "PRODUCT NAME AND VARIATION (Keep it clean, uppercase, readable)",
             "qty": number (The quantity of this item),
-            "vndPrice": number (The actual unit cost/price for ONE single item in VND)
+            "vndPrice": number (The actual unit cost/price for ONE single item in VND as an integer)
           }
         ]
         Do not include markdown blocks, text wrappers, or metadata. Return raw JSON array only.
